@@ -1,0 +1,7 @@
+{
+  "name": "Atelier",
+  "description": "A minimalist professional networking platform for artists and creative professionals featuring portfolio showcases, a job board, and real-time messaging.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
