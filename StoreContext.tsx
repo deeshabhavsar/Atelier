@@ -1,11 +1,11 @@
 /**
  * Global state management. 
- * Implements a React Context Provider that manages the application's data flow, 
- * including user authentication, profile updates, and interaction with the mock database.
+ * Updated to support real-time data syncing between MongoDB Atlas and local state.
  */
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserSession, ArtistProfile, Job, Conversation, CollabRequest, UserType } from './types';
 import { db } from './lib/db';
+import { INITIAL_ARTISTS, INITIAL_JOBS } from './mockData';
 
 interface StoreContextType {
   user: UserSession | null;
@@ -14,7 +14,7 @@ interface StoreContextType {
   conversations: Conversation[];
   collabRequests: CollabRequest[];
   isLoading: boolean;
-  login: (email: string, type: UserType) => void;
+  login: (email: string, type: UserType) => Promise<void>;
   logout: () => void;
   updateProfile: (profile: ArtistProfile) => Promise<void>;
   postJob: (job: Omit<Job, 'id' | 'createdAt'>) => Promise<void>;
@@ -36,68 +36,78 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [collabRequests, setCollabRequests] = useState<CollabRequest[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Initial Data Fetch from "Database"
+  // Initial Sync from Cloud Database
   useEffect(() => {
-    const initData = async () => {
+    const syncWithCloud = async () => {
       setIsLoading(true);
       try {
-        const [a, j, c, cr] = await Promise.all([
+        const [cloudArtists, cloudJobs, cloudConvos, cloudReqs] = await Promise.all([
           db.getArtists(),
           db.getJobs(),
           db.getConversations(),
           db.getCollabRequests()
         ]);
-        setArtists(a);
-        setJobs(j);
-        setConversations(c);
-        setCollabRequests(cr);
+
+        // Merge initial mock data if cloud is empty
+        setArtists(cloudArtists.length > 0 ? cloudArtists : INITIAL_ARTISTS);
+        setJobs(cloudJobs.length > 0 ? cloudJobs : INITIAL_JOBS);
+        setConversations(cloudConvos);
+        setCollabRequests(cloudReqs);
+      } catch (err) {
+        console.error("Critical Cloud Sync Error:", err);
       } finally {
         setIsLoading(false);
       }
     };
-    initData();
+    syncWithCloud();
   }, []);
 
-  // Save user session separately
   useEffect(() => {
-    localStorage.setItem('atelier_user', JSON.stringify(user));
+    if (user) localStorage.setItem('atelier_user', JSON.stringify(user));
+    else localStorage.removeItem('atelier_user');
   }, [user]);
 
-  const login = (email: string, type: UserType) => {
+  const login = async (email: string, type: UserType) => {
+    setIsLoading(true);
+    const id = `u_${btoa(email).substring(0, 10)}`; // Deterministic ID based on email
     const name = email.split('@')[0];
-    const id = `u_${Date.now()}`;
-    const newUser: UserSession = { id, name, email, type };
-    if (type === 'artist') {
-      const existingProfile = artists.find(a => a.id === id);
-      if (!existingProfile) {
-        const newProfile: ArtistProfile = {
-          id,
-          name,
-          headline: 'Emerging Artist',
-          location: 'Worldwide',
-          bio: 'Welcome to my creative space.',
-          avatar: `https://picsum.photos/seed/${id}/400/400`,
-          banner: `https://picsum.photos/seed/${id}-banner/1200/400`,
-          skills: [],
-          mediums: [],
-          portfolio: [],
-          experience: [],
-          isFeatured: false,
-          isAvailable: true,
-          availabilityStatus: 'Available',
-          pricing: { min: 0, max: 0, unit: 'project' },
-          collabPreferences: { isOpen: true, types: [], style: 'remote' }
-        };
-        const updatedArtists = [...artists, newProfile];
-        setArtists(updatedArtists);
-        db.saveArtists(updatedArtists);
-        newUser.profileId = id;
-      }
+    
+    let userProfile = artists.find(a => a.id === id);
+
+    if (!userProfile && type === 'artist') {
+      const newProfile: ArtistProfile = {
+        id,
+        name,
+        headline: 'Emerging Artist',
+        location: 'Worldwide',
+        bio: 'Welcome to my creative space.',
+        avatar: `https://picsum.photos/seed/${id}/400/400`,
+        banner: `https://picsum.photos/seed/${id}-banner/1200/400`,
+        skills: [],
+        mediums: [],
+        portfolio: [],
+        experience: [],
+        isFeatured: false,
+        isAvailable: true,
+        availabilityStatus: 'Available',
+        pricing: { min: 0, max: 0, unit: 'project' },
+        collabPreferences: { isOpen: true, types: [], style: 'remote' }
+      };
+      const updatedArtists = [...artists, newProfile];
+      setArtists(updatedArtists);
+      await db.saveArtists(updatedArtists);
+      userProfile = newProfile;
     }
+
+    const newUser: UserSession = { id, name, email, type, profileId: userProfile?.id };
     setUser(newUser);
+    setIsLoading(false);
   };
 
-  const logout = () => setUser(null);
+  const logout = () => {
+    setUser(null);
+    localStorage.removeItem('atelier_user');
+  };
 
   const updateProfile = async (profile: ArtistProfile) => {
     const updated = artists.map(a => a.id === profile.id ? profile : a);
